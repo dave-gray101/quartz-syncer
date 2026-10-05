@@ -177,6 +177,7 @@ export const DEFAULT_SETTINGS: QuartzSyncerSettings = {
 	/** UI settings */
 	diffViewStyle: "auto",
 	diffContextLines: 3,
+	allowLargeFullClone: false,
 	allowArbitraryFilePublishing: false,
 	arbitraryPublishPaths: [],
 
@@ -355,7 +356,10 @@ export default class QuartzSyncer extends Plugin {
 			this.binaryDetector = new BinaryDetector(this.processRunner);
 			this.gitRunner = new GitRunner(this.processRunner);
 			this.npmRunner = new NpmRunner(this.processRunner);
-			this.quartzRunner = new QuartzRunner(this.processRunner);
+			this.quartzRunner = new QuartzRunner(
+				this.processRunner,
+				() => this.settings.quartzRepoPath || undefined,
+			);
 		}
 
 		if (Platform.isDesktopApp) {
@@ -402,7 +406,7 @@ export default class QuartzSyncer extends Plugin {
 		this.gitRunner = null;
 		this.npmRunner = null;
 		this.quartzRunner = null;
-		ProcessRunner.resetChildProcessCache();
+		ProcessRunner.shutdown();
 		super.onunload();
 	}
 
@@ -653,6 +657,7 @@ export default class QuartzSyncer extends Plugin {
 				username: this.settings.gitAuthUsername || undefined,
 				secret: this.secretStorageService.getToken() || undefined,
 			},
+			allowLargeFullClone: this.settings.allowLargeFullClone,
 			providerHint: this.settings.gitProviderHint || undefined,
 		};
 	}

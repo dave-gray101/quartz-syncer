@@ -14,6 +14,7 @@ import {
 	resolvePublishTarget,
 	type ResolvedPublishTarget,
 } from "src/publisher/PublishTargetResolver";
+import { qsDom } from "src/operability/DomContract";
 import { QuartzConfigService } from "src/quartz/QuartzConfigService";
 import { QuartzPluginUpdateChecker } from "src/quartz/QuartzPluginUpdateChecker";
 import { QuartzVersionDetector } from "src/quartz/QuartzVersionDetector";
@@ -127,14 +128,28 @@ export class QuartzSyncerSettingTab extends PluginSettingTab {
 		items.push({
 			name: "Publish to",
 			desc: this.buildPublishTargetDesc(target),
-			control: {
-				type: "dropdown",
-				key: "publishTarget",
-				defaultValue: "remote",
-				options: {
-					remote: "Remote repository",
-					local: "Local folder (desktop only)",
-				},
+			// Rendered imperatively rather than declaratively because a
+			// `control` definition never exposes its <select>, and the publish
+			// destination has to be readable and settable through the DOM
+			// contract. Persistence still routes through setControlValue, so
+			// the publisher and status-cache invalidation below is preserved.
+			render: (setting) => {
+				setting.addDropdown((dropdown) => {
+					const current = this.getControlValue("publishTarget");
+					dropdown.addOptions({
+						remote: "Remote repository",
+						local: "Local folder (desktop only)",
+					});
+					dropdown.setValue(
+						typeof current === "string" ? current : "remote",
+					);
+					dropdown.onChange((value) => {
+						void this.setControlValue("publishTarget", value);
+					});
+					dropdown.selectEl.setAttrs(
+						qsDom("settings-input", { field: "publish-target" }),
+					);
+				});
 			},
 		});
 
@@ -226,6 +241,7 @@ export class QuartzSyncerSettingTab extends PluginSettingTab {
 			frag.createSpan({
 				text: describeBlocker(target.blocker, this.plugin.settings),
 				cls: "quartz-syncer-publish-target-warning",
+				attr: qsDom("settings-status", { field: "readiness" }),
 			});
 		}
 
@@ -241,6 +257,7 @@ export class QuartzSyncerSettingTab extends PluginSettingTab {
 			frag.createSpan({
 				text: describeReadinessIssue(issue),
 				cls: "quartz-syncer-publish-target-warning",
+				attr: qsDom("settings-status", { field: "readiness" }),
 			});
 		}
 
@@ -249,35 +266,61 @@ export class QuartzSyncerSettingTab extends PluginSettingTab {
 
 	private buildStatusFragment(): DocumentFragment {
 		const frag = createFragment();
-		const addLine = (label: string, value: string): void => {
-			frag.createSpan({ text: `${label}: ` });
-			frag.createSpan({ text: value });
-			frag.createEl("br");
+		const grid = frag.createDiv({ cls: "qs-settings-status" });
+
+		const addRow = (
+			label: string,
+			value: string,
+			tone?: "ok" | "warn" | "error",
+		): HTMLSpanElement => {
+			const row = grid.createDiv({ cls: "qs-settings-status-row" });
+			row.createSpan({
+				cls: "qs-settings-status-label",
+				text: label,
+			});
+			const valueEl = row.createDiv({
+				cls: "qs-settings-status-value",
+			});
+			if (tone) {
+				valueEl.createSpan({ cls: `qs-dot qs-dot-${tone}` });
+			}
+			return valueEl.createSpan({ text: value });
 		};
 
 		if (resolvePublishTarget(this.plugin.settings).effective === "local") {
-			addLine("Repository", this.plugin.settings.quartzRepoPath);
-			addLine("Mode", "Local folder");
+			addRow("Repository", this.plugin.settings.quartzRepoPath);
+			addRow("Mode", "Local folder");
 		} else {
-			addLine(
+			addRow(
 				"Repository",
 				this.formatRepoUrl(this.plugin.settings.gitRemoteUrl),
 			);
-			addLine("Branch", this.plugin.settings.gitBranch);
-			addLine(
+			addRow("Branch", this.plugin.settings.gitBranch);
+			const hasToken = this.plugin.secretStorageService.hasToken();
+			addRow(
 				"Authentication",
-				this.plugin.secretStorageService.hasToken()
-					? "Token stored securely"
-					: "No token set",
+				hasToken ? "Token stored securely" : "No token set",
+				hasToken ? "ok" : "error",
 			);
 		}
 
-		frag.createSpan({ text: "Quartz plugins: " });
-		const statusEl = frag.createSpan({
-			text: this.getPluginUpdateStatusText(),
+		const pluginsRow = grid.createDiv({ cls: "qs-settings-status-row" });
+		pluginsRow.createSpan({
+			cls: "qs-settings-status-label",
+			text: "Quartz plugins",
 		});
-		frag.createSpan({ text: " " });
-		const checkLink = frag.createEl("a", {
+		const pluginsValue = pluginsRow.createDiv({
+			cls: "qs-settings-status-value",
+		});
+		pluginsValue.createSpan({
+			cls: `qs-dot qs-dot-${this.getPluginUpdateTone()}`,
+		});
+		const statusEl = pluginsValue.createSpan({
+			text: this.getPluginUpdateStatusText(),
+			attr: qsDom("settings-status", { field: "plugin-updates" }),
+		});
+		const checkLink = pluginsValue.createEl("a", {
+			cls: "qs-settings-status-link",
 			text: "Check now",
 			href: "#",
 		});
@@ -287,6 +330,23 @@ export class QuartzSyncerSettingTab extends PluginSettingTab {
 		});
 
 		return frag;
+	}
+
+	private getPluginUpdateTone(): "ok" | "warn" | "error" | "idle" {
+		switch (this.pluginUpdateStatus.state) {
+			case "failed":
+				return "error";
+			case "v5-required":
+				return "warn";
+			case "complete":
+				return (this.pluginUpdateStatus.updates ?? 0) > 0
+					? "warn"
+					: "ok";
+			case "checking":
+			case "not-checked":
+			default:
+				return "idle";
+		}
 	}
 
 	private formatRepoUrl(url: string): string {

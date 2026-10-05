@@ -1,7 +1,7 @@
 import { GitHubApiService } from "src/github/GitHubApiService";
 import type { GitHubRepo, GitHubUser } from "src/github/types";
 import type QuartzSyncer from "src/main";
-import { ConflictError, NotFoundError } from "src/git/errors";
+import { ConflictError, NotFoundError, ProviderError } from "src/git/errors";
 
 const DEPLOY_WORKFLOW = `name: Deploy Quartz site to GitHub Pages
 
@@ -90,6 +90,7 @@ export interface OnboardingConfig {
 
 export class OnboardingService {
 	private apiService: GitHubApiService | null = null;
+	private apiServiceToken = "";
 
 	constructor(private plugin: QuartzSyncer) {}
 
@@ -118,7 +119,7 @@ export class OnboardingService {
 			);
 		} catch (error) {
 			if (!(error instanceof NotFoundError)) {
-				// Proceed with creation
+				throw error;
 			}
 		}
 
@@ -131,7 +132,7 @@ export class OnboardingService {
 		const branch = "v5";
 		await this.waitForTemplateReady(service, owner, repoName, branch);
 
-		let pagesWarning: string | null = null;
+		const warnings: string[] = [];
 
 		try {
 			await service.createFile(
@@ -143,8 +144,9 @@ export class OnboardingService {
 				branch,
 			);
 		} catch {
-			pagesWarning =
-				"Repository created successfully. The deploy workflow could not be added automatically — see the Quartz documentation for manual setup.";
+			warnings.push(
+				"The deploy workflow could not be added automatically — see the Quartz documentation for manual setup.",
+			);
 		}
 
 		try {
@@ -157,7 +159,9 @@ export class OnboardingService {
 				branch,
 			);
 		} catch {
-			// No-op
+			warnings.push(
+				"The initial index page could not be created. Add content/index.md before publishing.",
+			);
 		}
 
 		try {
@@ -170,17 +174,24 @@ export class OnboardingService {
 				baseUrl,
 			);
 		} catch {
-			// No-op
+			warnings.push(
+				"The Quartz config could not be updated with the site base URL. Set baseUrl manually.",
+			);
 		}
 
 		try {
 			await service.enablePages(owner, repoName);
 		} catch {
-			if (!pagesWarning) {
-				pagesWarning =
-					"Repository created successfully. GitHub Pages could not be enabled automatically — you can enable it manually in your repository settings.";
-			}
+			warnings.push(
+				"GitHub Pages could not be enabled automatically — you can enable it manually in your repository settings.",
+			);
 		}
+
+		// Every step after creation is best-effort, but a silently skipped one
+		// leaves a repo that looks ready and is not. Each failure is reported.
+		const pagesWarning = warnings.length
+			? `Repository created successfully. ${warnings.join(" ")}`
+			: null;
 
 		return { repo, pagesWarning };
 	}
@@ -213,8 +224,9 @@ export class OnboardingService {
 	}
 
 	private getService(token: string): GitHubApiService {
-		if (!this.apiService) {
+		if (!this.apiService || this.apiServiceToken !== token) {
 			this.apiService = new GitHubApiService(token);
+			this.apiServiceToken = token;
 		}
 		return this.apiService;
 	}
@@ -238,6 +250,9 @@ export class OnboardingService {
 			);
 			if (file) return;
 		}
+		throw new ProviderError(
+			"Repository template was not ready after 15 attempts",
+		);
 	}
 
 	private async updateQuartzConfig(

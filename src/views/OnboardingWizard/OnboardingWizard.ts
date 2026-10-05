@@ -168,7 +168,10 @@ export class OnboardingWizard extends Modal {
 	private pagesWarning = "";
 	private errorMessage = "";
 	private isBusy = false;
+	private isClosed = false;
+	private abortController = new AbortController();
 	private apiService: GitHubApiService | null = null;
+	private apiServiceToken = "";
 	private newSiteName = "";
 	private isPrivate = false;
 	private stepContentEl: HTMLDivElement | null = null;
@@ -189,6 +192,8 @@ export class OnboardingWizard extends Modal {
 	}
 
 	onClose(): void {
+		this.isClosed = true;
+		this.abortController.abort();
 		this.plugin
 			.getEventSink()
 			?.emit("ui.modal.closed", { name: "onboarding-wizard" });
@@ -302,33 +307,44 @@ export class OnboardingWizard extends Modal {
 		}
 
 		const choices = container.createDiv("qs-onboarding-choices");
-		const createCard = choices.createDiv("qs-onboarding-choice-card");
-		createCard.setAttr("tabindex", "0");
-		createCard.setAttr("role", "button");
-		const createIcon = createCard.createSpan("qs-onboarding-choice-icon");
-		setIcon(createIcon, "plus");
-		createCard.createSpan({
-			cls: "qs-onboarding-choice-title",
-			text: "Create new Quartz site",
-		});
-		createCard.createSpan({
-			cls: "qs-onboarding-choice-desc",
-			text: "Start fresh with a new GitHub repository",
-		});
 
-		const connectCard = choices.createDiv("qs-onboarding-choice-card");
-		connectCard.setAttr("tabindex", "0");
-		connectCard.setAttr("role", "button");
-		const connectIcon = connectCard.createSpan("qs-onboarding-choice-icon");
-		setIcon(connectIcon, "link");
-		connectCard.createSpan({
-			cls: "qs-onboarding-choice-title",
-			text: "Connect existing repository",
-		});
-		connectCard.createSpan({
-			cls: "qs-onboarding-choice-desc",
-			text: "Link to a Quartz repository you already have",
-		});
+		const createChoiceCard = (
+			value: "create" | "connect",
+			icon: string,
+			title: string,
+			description: string,
+		): HTMLDivElement => {
+			const card = choices.createDiv("qs-onboarding-choice-card");
+			card.setAttr("tabindex", "0");
+			card.setAttr("role", "button");
+			card.setAttrs(qsDom("wizard-choice", { value }));
+			const iconEl = card.createSpan("qs-onboarding-choice-icon");
+			setIcon(iconEl, icon);
+			const body = card.createDiv("qs-onboarding-choice-body");
+			body.createSpan({
+				cls: "qs-onboarding-choice-title",
+				text: title,
+			});
+			body.createSpan({
+				cls: "qs-onboarding-choice-desc",
+				text: description,
+			});
+			return card;
+		};
+
+		const createCard = createChoiceCard(
+			"create",
+			"plus",
+			"Create new Quartz site",
+			"Start fresh with a new GitHub repository",
+		);
+
+		const connectCard = createChoiceCard(
+			"connect",
+			"link",
+			"Connect existing repository",
+			"Link to a Quartz repository you already have",
+		);
 
 		const handleChoice = (flow: "create" | "connect") => {
 			this.flow = flow;
@@ -422,6 +438,7 @@ export class OnboardingWizard extends Modal {
 		inputEl.value = this.newSiteName;
 
 		const validationEl = container.createDiv("qs-onboarding-validation");
+		validationEl.setAttrs(qsDom("wizard-state", { field: "validation" }));
 
 		const nameError = getRepoNameError(this.newSiteName);
 
@@ -450,6 +467,7 @@ export class OnboardingWizard extends Modal {
 		const toggleContainer = container.createDiv("qs-onboarding-toggle");
 		const toggleLabel = toggleContainer.createEl("label");
 		const checkboxEl = toggleLabel.createEl("input", { type: "checkbox" });
+		checkboxEl.setAttrs(qsDom("wizard-checkbox", { field: "private" }));
 		checkboxEl.checked = this.isPrivate;
 		toggleLabel.appendText(" Make repository private");
 		checkboxEl.addEventListener("change", () => {
@@ -474,10 +492,12 @@ export class OnboardingWizard extends Modal {
 		});
 
 		if (this.isBusy) {
-			container.createEl("p", {
-				text: "Creating repository and enabling pages...",
-				cls: "qs-onboarding-progress",
-			});
+			container
+				.createEl("p", {
+					text: "Creating repository and enabling pages...",
+					cls: "qs-onboarding-progress",
+				})
+				.setAttrs(qsDom("wizard-state", { field: "creating" }));
 		}
 	}
 
@@ -489,10 +509,12 @@ export class OnboardingWizard extends Modal {
 		});
 
 		if (this.isBusy && this.repos.length === 0) {
-			container.createEl("p", {
-				text: "Loading repositories...",
-				cls: "qs-onboarding-progress",
-			});
+			container
+				.createEl("p", {
+					text: "Loading repositories...",
+					cls: "qs-onboarding-progress",
+				})
+				.setAttrs(qsDom("wizard-state", { field: "loading" }));
 			return;
 		}
 
@@ -506,6 +528,7 @@ export class OnboardingWizard extends Modal {
 		const selectEl = container.createEl("select", {
 			cls: "qs-onboarding-repo-select",
 		});
+		selectEl.setAttrs(qsDom("wizard-select", { field: "repo" }));
 		selectEl.size = 8;
 
 		const populateSelect = (filter: string): void => {
@@ -549,9 +572,12 @@ export class OnboardingWizard extends Modal {
 			this.selectedRepo = selected ?? null;
 		});
 
-		container.createDiv({ cls: "qs-onboarding-helper" }).createSpan({
-			text: `${this.repos.length} repositories loaded.`,
-		});
+		container
+			.createDiv({ cls: "qs-onboarding-helper" })
+			.createSpan({
+				text: `${this.repos.length} repositories loaded.`,
+			})
+			.setAttrs(qsDom("wizard-state", { field: "repo-count" }));
 
 		const connectBtn = container.createEl("button", {
 			text: "Continue",
@@ -647,6 +673,10 @@ export class OnboardingWizard extends Modal {
 			cls: "mod-cta",
 			text: "Open Publication Center",
 		});
+
+		openCenterButton.setAttrs(
+			qsDom("wizard-action", { value: "open-publication-center" }),
+		);
 		openCenterButton.addEventListener("click", () => {
 			this.close();
 			this.plugin.getPublicationCenterManager()?.open() ??
@@ -656,6 +686,7 @@ export class OnboardingWizard extends Modal {
 		const doneButton = container.createEl("button", {
 			text: "Done",
 		});
+		doneButton.setAttrs(qsDom("wizard-action", { value: "done" }));
 		doneButton.addClass("qs-done-button");
 		doneButton.addEventListener("click", () => {
 			this.close();
@@ -695,6 +726,7 @@ export class OnboardingWizard extends Modal {
 	}
 
 	private async handleValidateToken(): Promise<void> {
+		if (this.isClosed) return;
 		if (!this.token) {
 			this.errorMessage = "Token is required.";
 			this.render();
@@ -705,7 +737,9 @@ export class OnboardingWizard extends Modal {
 		this.render();
 		try {
 			const service = this.getService();
-			this.user = await service.validateToken(this.token);
+			const user = await service.validateToken(this.token);
+			if (this.isClosed) return;
+			this.user = user;
 			if (this.flow === "create") {
 				this.step = "create";
 				return;
@@ -713,31 +747,41 @@ export class OnboardingWizard extends Modal {
 			void this.handleLoadRepos();
 			return;
 		} catch (error) {
+			if (this.isClosed) return;
 			this.errorMessage = this.formatError(error);
 		} finally {
-			this.isBusy = false;
-			this.render();
+			if (!this.isClosed) {
+				this.isBusy = false;
+				this.render();
+			}
 		}
 	}
 
 	private async handleLoadRepos(): Promise<void> {
+		if (this.isClosed) return;
 		this.isBusy = true;
 		this.errorMessage = "";
 		this.step = "connect";
 		this.render();
 		try {
 			const service = this.getService();
-			this.repos = await service.listRepos();
+			const repos = await service.listRepos();
+			if (this.isClosed) return;
+			this.repos = repos;
 			this.selectedRepo = this.repos[0] ?? null;
 		} catch (error) {
+			if (this.isClosed) return;
 			this.errorMessage = this.formatError(error);
 		} finally {
-			this.isBusy = false;
-			this.render();
+			if (!this.isClosed) {
+				this.isBusy = false;
+				this.render();
+			}
 		}
 	}
 
 	private async handleCreateSite(): Promise<void> {
+		if (this.isClosed) return;
 		if (!this.newSiteName || !isValidRepoName(this.newSiteName)) {
 			this.errorMessage =
 				getRepoNameError(this.newSiteName) ?? "Site name is required.";
@@ -751,17 +795,18 @@ export class OnboardingWizard extends Modal {
 			const service = this.getService();
 
 			const user = await service.getUser();
+			if (this.isClosed) return;
 
 			try {
 				await service.getRepo(user.login, this.newSiteName);
-				this.errorMessage =
-					"A repository with this name already exists on your account.";
-				this.isBusy = false;
-				this.render();
-				return;
+				if (this.isClosed) return;
+				throw new ConflictError(
+					"A repository with this name already exists on your account.",
+				);
 			} catch (e) {
+				if (this.isClosed) return;
 				if (!(e instanceof NotFoundError)) {
-					// Non-404 error during check — proceed with creation anyway
+					throw e;
 				}
 			}
 
@@ -769,6 +814,7 @@ export class OnboardingWizard extends Modal {
 				this.newSiteName,
 				this.isPrivate,
 			);
+			if (this.isClosed) return;
 			this.createdRepo = repo;
 			const [owner, name] = repo.full_name.split("/");
 			if (!owner || !name) {
@@ -778,6 +824,7 @@ export class OnboardingWizard extends Modal {
 			const branch = "v5";
 
 			await this.waitForTemplateReady(service, owner, name, branch);
+			if (this.isClosed) return;
 
 			try {
 				await service.createFile(
@@ -788,7 +835,9 @@ export class OnboardingWizard extends Modal {
 					"Add GitHub Pages deploy workflow",
 					branch,
 				);
+				if (this.isClosed) return;
 			} catch {
+				if (this.isClosed) return;
 				this.pagesWarning =
 					"Repository created successfully. The deploy workflow could not be added automatically \u2014 see the Quartz documentation for manual setup.";
 			}
@@ -802,7 +851,9 @@ export class OnboardingWizard extends Modal {
 					"Add initial index page",
 					branch,
 				);
+				if (this.isClosed) return;
 			} catch {
+				if (this.isClosed) return;
 				console.debug(
 					"Could not create content/index.md — may already exist",
 				);
@@ -817,13 +868,18 @@ export class OnboardingWizard extends Modal {
 					branch,
 					baseUrl,
 				);
+				if (this.isClosed) return;
 			} catch {
+				if (this.isClosed) return;
 				console.debug("Could not update quartz.config.yaml");
 			}
 
 			try {
-				this.pagesConfig = await service.enablePages(owner, name);
+				const pagesConfig = await service.enablePages(owner, name);
+				if (this.isClosed) return;
+				this.pagesConfig = pagesConfig;
 			} catch {
+				if (this.isClosed) return;
 				if (!this.pagesWarning) {
 					this.pagesWarning =
 						"Repository created successfully. GitHub Pages could not be enabled automatically \u2014 you can enable it manually in your repository settings.";
@@ -832,14 +888,18 @@ export class OnboardingWizard extends Modal {
 
 			this.step = "configure";
 		} catch (error) {
+			if (this.isClosed) return;
 			this.errorMessage = this.formatError(error);
 		} finally {
-			this.isBusy = false;
-			this.render();
+			if (!this.isClosed) {
+				this.isBusy = false;
+				this.render();
+			}
 		}
 	}
 
 	private async handleConfigure(repo: GitHubRepo): Promise<void> {
+		if (this.isClosed) return;
 		this.isBusy = true;
 		this.errorMessage = "";
 		this.render();
@@ -852,12 +912,16 @@ export class OnboardingWizard extends Modal {
 			this.plugin.settings.gitProviderHint = "github";
 			this.plugin.secretStorageService.setToken(this.token);
 			await this.plugin.saveSettings();
+			if (this.isClosed) return;
 			this.step = "success";
 		} catch (error) {
+			if (this.isClosed) return;
 			this.errorMessage = this.formatError(error);
 		} finally {
-			this.isBusy = false;
-			this.render();
+			if (!this.isClosed) {
+				this.isBusy = false;
+				this.render();
+			}
 		}
 	}
 
@@ -871,7 +935,18 @@ export class OnboardingWizard extends Modal {
 		const delayMs = 2000;
 
 		for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-			await new Promise((resolve) => window.setTimeout(resolve, delayMs));
+			if (this.isClosed) return;
+			await new Promise<void>((resolve) => {
+				const signal = this.abortController.signal;
+				const finish = () => {
+					window.clearTimeout(timer);
+					signal.removeEventListener("abort", finish);
+					resolve();
+				};
+				const timer = window.setTimeout(finish, delayMs);
+				signal.addEventListener("abort", finish, { once: true });
+			});
+			if (this.isClosed) return;
 
 			const file = await service.getFileContent(
 				owner,
@@ -879,6 +954,7 @@ export class OnboardingWizard extends Modal {
 				"package.json",
 				branch,
 			);
+			if (this.isClosed) return;
 
 			if (file) return;
 		}
@@ -891,12 +967,14 @@ export class OnboardingWizard extends Modal {
 		branch: string,
 		baseUrl: string,
 	): Promise<void> {
+		if (this.isClosed) return;
 		const existing = await service.getFileContent(
 			owner,
 			repo,
 			"quartz.config.yaml",
 			branch,
 		);
+		if (this.isClosed) return;
 
 		if (existing) return;
 
@@ -906,6 +984,7 @@ export class OnboardingWizard extends Modal {
 			"quartz.config.default.yaml",
 			branch,
 		);
+		if (this.isClosed) return;
 
 		if (!defaultConfig) return;
 
@@ -935,8 +1014,9 @@ export class OnboardingWizard extends Modal {
 	}
 
 	private getService(): GitHubApiService {
-		if (!this.apiService) {
+		if (!this.apiService || this.apiServiceToken !== this.token) {
 			this.apiService = new GitHubApiService(this.token);
+			this.apiServiceToken = this.token;
 		}
 		return this.apiService;
 	}

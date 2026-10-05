@@ -1,6 +1,6 @@
 {
 	"name": "quartz-syncer",
-	"version": "2.0.18",
+	"version": "2.2.0",
 	"type": "module",
 	"main": "main.js",
 	"engines": {
@@ -10,7 +10,10 @@
 		"dev": "node esbuild.config.mjs watch",
 		"build": "node esbuild.config.mjs production",
 		"build:dev": "node esbuild.config.mjs development",
-		"lint": "eslint .",
+		"lint": "npm run lint:js && npm run lint:css",
+		"lint:js": "eslint .",
+		"lint:css": "stylelint \"**/*.css\"",
+		"lint:css:fix": "stylelint \"**/*.css\" --fix",
 		"test": "npm run test:unit && npm run test:integration",
 		"test:unit": "vitest run",
 		"bench": "vitest bench --config vitest.bench.config.ts",
@@ -34,21 +37,26 @@
 		"eslint-plugin-obsidianmd": "^0.4",
 		"globals": "latest",
 		"jiti": "^2.7.0",
-		"obsidian": "^1.13.0",
+		"obsidian": "^1.13.1",
 		"obsidian-typings": "^6.33.0",
 		"prettier": "^3",
+		"stylelint": "^17.15.0",
+		"stylelint-config-obsidianmd": "^0.1.0",
 		"typescript": "^5.2",
 		"vite": "^7.3.6",
 		"vitest": "^5.0.0",
 		"wdio-obsidian-reporter": "^3.1.1",
 		"wdio-obsidian-service": "^3.1.1"
 	},
+	"overrides": {
+		"moment": "^2.31.0"
+	},
 	"dependencies": {
 		"@isomorphic-git/lightning-fs": "^4.7.0",
 		"@quartz-community/remark-obsidian": "^1.1.0",
+		"@saberzero1/isomorphic-git": "^0.0.1",
 		"buffer": "^6.0.3",
 		"diff": "^9.0.0",
-		"isomorphic-git": "https://github.com/saberzero1/isomorphic-git.git",
 		"obsidian-extended-metadatacache": "^0.5.1",
 		"remark-frontmatter": "^5.0.0",
 		"remark-parse": "^11.0.0",

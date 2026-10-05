@@ -10,7 +10,8 @@ Obsidian Community Plugin. Publishes Obsidian notes to [Quartz](https://quartz.j
 - E2E tests: WebdriverIO
 - Integration tests: Playwright
 - Type check: `npx tsc --noEmit`
-- isomorphic-git fork: `saberzero1/isomorphic-git`. The `package.json` dependency MUST point to `https://github.com/saberzero1/isomorphic-git.git` before committing — never `file:../isomorphic-git`.
+- Lint: `npm run lint` (ESLint + Stylelint). CSS only: `npm run lint:css`
+- isomorphic-git fork: published as `@saberzero1/isomorphic-git`. Import it by that name — never bare `isomorphic-git`. Obsidian enforces npm 12, which rejects git-based dependencies, so **no dependency may resolve from a git URL**: never `file:../isomorphic-git`, never `https://github.com/...`. Verify with `grep -c "git+" package-lock.json` — it must be `0`.
 
 ## Architecture
 
@@ -58,6 +59,10 @@ Media files linked by notes are pushed alongside them automatically. Orphaned me
 
 Uses persistent shell + `PublicationTree` class with keyed DOM row maps. State changes update checkbox properties and CSS classes in-place — no full DOM rebuilds. This preserves `checkbox.indeterminate`, scroll position, and input focus.
 
+The Delete button is real and destructive: it calls `Publisher.deleteBatch()` for selected `deleted`/`published` notes and `Publisher.deleteByRepoPaths()` for selected media and custom files. `collectDeletions()` is the single predicate deciding what is deletable, and both `handleDelete()` and the button's enabled state read it — keep them on that one helper so they cannot drift. `changed` and `unpublished` files are deliberately not deletable, so selecting only those leaves the button disabled.
+
+Note that the button performs no confirmation step, while the two programmatic surfaces both demand one: the facade's `pub.delete` requires `confirm: true`, and the CLI's `delete` requires `force`.
+
 ## CLI
 
 22 commands registered via `registerCliHandler()` (Obsidian 1.12.2+ API). NOT `registerObsidianProtocolHandler` — that is for URL protocol handling, not CLI.
@@ -100,6 +105,52 @@ Declarative settings only (Obsidian minAppVersion 1.13). Definitions in `getSett
 - No new runtime dependencies.
 - `Platform.isDesktopApp` (not `Platform.isDesktop`).
 - Keep `src/main.ts` minimal — lifecycle + settings only.
+
+## Styling
+
+All plugin CSS lives in the single top-level `styles.css`. There is no preprocessor and no CSS framework.
+
+### Design tokens
+
+Spacing, surfaces, status colours, and label treatment come from a `--qs-*` token block at the top of `styles.css`. Every token derives from an Obsidian variable, which is what keeps the plugin theme-reactive across light/dark and third-party themes. Use the tokens rather than reaching for raw Obsidian variables ad hoc — that is what keeps a Hub status label and a Publication Center category label the same size.
+
+Never add a hard-coded colour, and never add a raw px font size.
+
+**The token block must stay on `body`.** Obsidian declares its theme variables (`--background-primary`, `--color-green`, …) on `body`, not on `:root`. A token defined at `:root` resolves `var(--background-primary)` against `:root`, where it is undefined, and the token silently becomes invalid at computed-value time. Moving the block to `:root` breaks every token without any build or test failure.
+
+Status colours flow from three tone tokens — `--qs-tone-new`, `--qs-tone-changed`, `--qs-tone-gone` — consumed by the Publication Center row rails (`.tree-rail-*`), the `.qs-dot` status dots, and the Hub chips. Change a state colour there, not at the call site.
+
+### The `.qs-hidden` trap
+
+`.qs-hidden` is written as `.qs-hidden.qs-hidden.qs-hidden`. The repetition is load-bearing, not a typo: it raises the selector to specificity (0,3,0) so it beats two-class component rules such as `.qs-pub-center .tree-category-header`, which set `display` and would otherwise win — leaving the element visible while the calling code believes it hid it.
+
+This exact failure shipped once — `TreeRenderer.update()` correctly called `toggleClass("qs-hidden", count === 0)` on empty category headers, and they rendered anyway. Collapsing the selector back to a single `.qs-hidden` reintroduces that bug across all `qs-hidden` call sites at once, and no unit test will catch it.
+
+`!important` would also fix it, but it is banned — see CSS linting below.
+
+### CSS linting
+
+`npm run lint:css` runs Stylelint with [`stylelint-config-obsidianmd`](https://github.com/obsidianmd/stylelint-config) — the same rules the Obsidian community plugin review uses. It is wired into `npm run lint`, so CI already enforces it.
+
+`declaration-no-important` is raised from the config's default `warning` to **`error`**: the community scanner flags `!important`, so it must fail the build rather than be quietly tolerated. Fix specificity conflicts by making the selector more specific, never by reaching for `!important`.
+
+Two consequences worth knowing:
+
+- Media queries must use range syntax — `@media (width <= 820px)`, not `(max-width: 820px)`.
+- Use `rgb()` rather than the `rgba()` alias, even with an alpha channel.
+
+`npm run lint:css:fix` auto-fixes both.
+
+### What tests cannot see
+
+`vitest` runs in jsdom, which has no layout engine. Geometry bugs — a stretched checkbox, a misaligned grid column, text wrapping onto four lines, an element that should be hidden but is not — pass `tsc`, `eslint`, and the entire unit suite. Verify layout changes in a running Obsidian instance with `getBoundingClientRect()` / `getComputedStyle()` probes, not by reading the stylesheet.
+
+### Verifying layout in Obsidian
+
+Two traps make live layout probes unreliable:
+
+- **Stale modals.** Modals survive `disablePlugin`/`enablePlugin` and accumulate in the DOM, and `document.querySelector` returns the *first* — usually a dead one. Close everything with repeated `Escape` keydowns (`.modal-close-button.click()` does not reliably work), confirm `document.querySelectorAll('.modal').length === 0`, then open exactly one. Prefer reading state off the live instance via `window.__QS__.plugin.publicationCenterManager.modal`.
+- **Window resizing.** `window.resizeTo()` works for testing breakpoints, but under Wayland the renderer viewport can desync from the Electron window — `innerWidth` freezes while `getCurrentWindow().getBounds()` reports the new size. Always assert the new `innerWidth` before trusting a breakpoint result. To recover, set bounds via `require('@electron/remote').getCurrentWindow()` and then `location.reload()` to resync.
 
 ## Verification
 
@@ -159,18 +210,68 @@ All agent-queryable UI elements use `data-qs` attributes generated by `qsDom()` 
 | `[data-qs="pub-search"]` | Filter input |
 | `[data-qs="pub-progress"]` | Progress bar indicator |
 | `[data-qs="pub-target"]` | Publish destination line (has `data-qs-value`: local/remote/none) |
+| `[data-qs="pub-error"]` | Status-load error message |
+| `[data-qs="pub-retry"]` | Retry status loading button |
 | `[data-qs="wizard"]` | Onboarding wizard modal |
 | `[data-qs="wizard-step"]` | Step indicator (has `data-qs-value`) |
+| `[data-qs="wizard-choice"]` | Onboarding flow card on the first step (has `data-qs-value`: create/connect) |
+| `[data-qs="wizard-back"]` | Back button (absent on the first step) |
 | `[data-qs="wizard-next"]` | Next/continue/create button |
 | `[data-qs="wizard-input"]` | Input field (has `data-qs-field`) |
 | `[data-qs="wizard-error"]` | Error display |
 | `[data-qs="statusbar"]` | Status bar (has `data-qs-state`: ready/compiling/error/unconfigured) |
 | `[data-qs="diff-view"]` | Diff viewer modal |
+| `[data-qs="notice"]` | Version-upgrade notice modal (blocks the UI until dismissed) |
+| `[data-qs="terminal"]` | Terminal output modal |
+| `[data-qs="terminal-output"]` | Terminal output `<pre>` |
+| `[data-qs="terminal-action"]` | Terminal button (has `data-qs-value`: cancel/copy/close) |
 | `[data-qs="hub"]` | Quartz Hub modal |
 | `[data-qs="hub-tab"]` | Hub tab button (has `data-qs-value`) |
 | `[data-qs="hub-status"]` | Hub status panel |
 | `[data-qs="hub-action"]` | Hub action button (has `data-qs-value`) |
-| `[data-qs="hub-path"]` | Hub repo path input |
+| `[data-qs="hub-serve-status"]` | Preview-server status row on the Overview tab |
+| `[data-qs="hub-setup-link-path"]` | Setup tab: existing-repo path input |
+| `[data-qs="hub-setup-link"]` | Setup tab: link button |
+| `[data-qs="hub-setup-clone-url"]` | Setup tab: clone URL input |
+| `[data-qs="hub-setup-clone-dest"]` | Setup tab: clone destination input |
+| `[data-qs="hub-setup-clone"]` | Setup tab: clone button |
+| `[data-qs="settings-test-btn"]` | Git settings: test connection button |
+| `[data-qs="settings-test-result"]` | Git settings: test connection result text |
+| `[data-qs="cache-cleanup"]` | Cache cleanup modal |
+| `[data-qs="cache-cleanup-item"]` | Cache cleanup entry (has `data-qs-name`) |
+| `[data-qs="cache-cleanup-empty"]` | Cache cleanup empty state |
+| `[data-qs="cache-cleanup-confirm"]` | Cache cleanup confirm button |
+| `[data-qs="cache-cleanup-cancel"]` | Cache cleanup cancel button |
+| `[data-qs="manual-setup"]` | Manual setup modal (mobile / no-wizard Git setup) |
+| `[data-qs="manual-input"]` | Manual setup field (has `data-qs-field`: url/branch/auth-type/username/token/cors/content-folder) |
+| `[data-qs="manual-action"]` | Manual setup button (has `data-qs-value`: test/save) |
+| `[data-qs="manual-test-result"]` | Manual setup connection-test result text |
+| `[data-qs="settings-input"]` | Settings field (has `data-qs-field`, e.g. remote-url/branch/token/repo-path/publish-target) |
+| `[data-qs="settings-action"]` | Settings button (has `data-qs-value`, e.g. save-token/clear-token/open-hub) |
+| `[data-qs="settings-status"]` | Settings status text (has `data-qs-field`, e.g. token/readiness/quartz-version/plugin-updates) |
+| `[data-qs="wizard-select"]` | Wizard dropdown (has `data-qs-field`: repo) |
+| `[data-qs="wizard-checkbox"]` | Wizard checkbox (has `data-qs-field`: private) |
+| `[data-qs="wizard-action"]` | Wizard terminal action (has `data-qs-value`: open-publication-center/done) |
+| `[data-qs="wizard-state"]` | Wizard progress or validation text (has `data-qs-field`: validation/creating/loading/repo-count) |
+| `[data-qs="hub-state"]` | Hub tab load state (has `data-qs-value`: loading/error/empty/unavailable) |
+| `[data-qs="hub-plugin-row"]` | Hub plugin entry (has `data-qs-name`) |
+| `[data-qs="hub-plugin-action"]` | Hub plugin button (has `data-qs-name` and `data-qs-value`: enable/disable/remove) |
+| `[data-qs="hub-plugin-status"]` | Hub plugin enabled/disabled status (has `data-qs-name`) |
+| `[data-qs="hub-template-row"]` | Hub template entry (has `data-qs-name`) |
+| `[data-qs="hub-template-action"]` | Hub template apply button (has `data-qs-name`) |
+| `[data-qs="hub-config-input"]` | Hub Quartz config field (has `data-qs-field`) |
+| `[data-qs="hub-config-action"]` | Hub Quartz config button (has `data-qs-value`: save) |
+| `[data-qs="hub-layout-input"]` | Hub layout priority input (has `data-qs-name`) |
+| `[data-qs="hub-setup-status"]` | Setup tab path-validation status text |
+| `[data-qs="plugin-browser"]` | Plugin browser modal |
+| `[data-qs="plugin-browser-input"]` | Plugin browser control (has `data-qs-field`: search/category/source/sort/view) |
+| `[data-qs="plugin-browser-item"]` | Plugin browser entry (has `data-qs-name`) |
+| `[data-qs="plugin-browser-action"]` | Plugin browser install button (has `data-qs-name`) |
+| `[data-qs="plugin-browser-status"]` | Plugin browser per-entry install status (has `data-qs-name`) |
+| `[data-qs="plugin-browser-state"]` | Plugin browser registry state (has `data-qs-value`: loading/error/empty) |
+| `[data-qs="pub-setup-btn"]` | Publication center empty-state setup button |
+| `[data-qs="pub-add-file"]` | Publication center advanced-tab add-file button |
+| `[data-qs="diff-action"]` | Diff control (has `data-qs-value`: split/unified/expand-all/back) |
 
 ### Services
 
@@ -235,6 +336,16 @@ obsidian eval code="(async()=>{const r=await window.__QS__.act({name:'status.ref
 ```
 `snapshot()` is always safe to stringify — it is a redacted, plain-object view.
 
+**`env.emulateMobile` cannot exercise the mobile code paths.** It calls Obsidian's `app.emulateMobile()`, which reloads the app and flips `Platform.isMobile` — but **not** `Platform.isDesktopApp`, because the process is still desktop Electron. Every `Platform.isDesktopApp` branch therefore keeps taking the desktop path, and that flag gates the whole two-tier platform split. Verified: with the remote unconfigured under active emulation, the Publication Center empty state still renders "Open setup wizard" (desktop) rather than "Open manual setup" (mobile).
+
+Consequences:
+
+- The *branch selection* between desktop and mobile UI cannot be emulated. Paths that pick a surface with `Platform.isDesktopApp` always choose the desktop one, so e.g. the Publication Center empty state cannot be made to route to `ManualSetupModal`.
+- `ManualSetupModal` itself is still reachable on desktop: the `quartz-syncer:manual-setup` command is registered unconditionally, so `obsidian command id=quartz-syncer:manual-setup` opens it for verification.
+- `snapshot().plugin.platform` is derived from `isDesktopApp` and so reads `"desktop"` during emulation. Use `snapshot().plugin.mobileEmulated` to detect the emulated state.
+- Emulation is still useful for layout and CSS checks, which respond to the `is-mobile` body class.
+
+
 **Setting input values requires `dispatchEvent`.** DOM `.value` assignment does not trigger event listeners. Always dispatch an `input` event after setting:
 ```bash
 obsidian eval code="const el=document.querySelector('[data-qs=\"hub-setup-clone-url\"]');el.value='https://example.com/repo.git';el.dispatchEvent(new Event('input',{bubbles:true}))" 2>/dev/null
@@ -257,7 +368,7 @@ obsidian eval code="const el=document.querySelector('[data-qs=\"hub-setup-clone-
 # Click a button
 obsidian eval code="document.querySelector('[data-qs=\"hub-action\"][data-qs-value=\"build\"]')?.click()" 2>/dev/null
 # Verify the terminal modal opened
-sleep 3 && obsidian dev:dom selector='.qs-terminal-output' total 2>/dev/null
+sleep 3 && obsidian dev:dom selector='[data-qs="terminal"]' total 2>/dev/null
 ```
 
 **Build + reload is a two-step process.** `npm run build:dev` compiles and copies to the test vault, but the running Obsidian instance still uses the old code until the plugin is reloaded:
